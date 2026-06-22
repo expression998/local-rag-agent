@@ -1,0 +1,56 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.uv-cache/
+build/
+dist/
+*.egg-info/
+
+# Local RAG indexes and generated state
+chroma_db/
+.index_manifest.json
+
+# Local/private knowledge files
+# Keep only small public examples in Git.
+knowledge/*
+!knowledge/.gitkeep
+!knowledge/example.md
+
+# Model and dataset caches
+.cache/
+models/
+*.bin
+*.safetensors
+*.onnx
+
+# Logs and temporary files
+*.log
+*.tmp
+tmp/
+temp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
