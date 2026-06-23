@@ -1,56 +1,31 @@
-# Environment and secrets
+# 环境变量
 .env
-.env.*
-!.env.example
 
-# Python virtual environments
-.venv/
-venv/
-env/
-
-# Python cache and build artifacts
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-*.pyd
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.uv-cache/
-build/
-dist/
 *.egg-info/
+dist/
+build/
 
-# Local RAG indexes and generated state
+# PDF 文档（版权原因不上传）
+knowledge/*.pdf
+
+# 向量数据库（自动生成，体积大）
 chroma_db/
+
+# 索引清单（自动生成）
 .index_manifest.json
 
-# Local/private knowledge files
-# Keep only small public examples in Git.
-knowledge/*
-!knowledge/.gitkeep
-!knowledge/example.md
-
-# Model and dataset caches
-.cache/
-models/
-*.bin
-*.safetensors
-*.onnx
-
-# Logs and temporary files
-*.log
-*.tmp
-tmp/
-temp/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
+# 操作系统
 Thumbs.db
-Desktop.ini
 .DS_Store
+
+# 开发工具
+.venv/
+.vscode/
+.idea/
+
+# uv
+uv.lock
