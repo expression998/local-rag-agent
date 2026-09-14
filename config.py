@@ -19,6 +19,10 @@ CHROMA_SPACE = "ip"
 RAG_TOP_K_RETRIEVE = 10
 RAG_TOP_K_RERANK = 3
 
+ENABLE_QUERY_REWRITE = os.getenv("ENABLE_QUERY_REWRITE", "true").lower() not in {"0", "false", "no", "off"}
+QUERY_REWRITE_HISTORY_MESSAGES = int(os.getenv("QUERY_REWRITE_HISTORY_MESSAGES", "6"))
+QUERY_REWRITE_MAX_TOKENS = int(os.getenv("QUERY_REWRITE_MAX_TOKENS", "128"))
+
 
 @dataclass
 class LLMProvider:

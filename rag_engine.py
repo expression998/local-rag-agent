@@ -323,10 +323,22 @@ class RAGEngine:
         scored.sort(key=lambda item: item[1], reverse=True)
         return [chunk for chunk, _ in scored[:top_k]]
 
-    def query(self, question: str) -> dict[str, Any]:
-        chunks = self.retrieve(question)
-        best_chunks = self.rerank(question, chunks)
+    def query(self, question: str, search_query: str | None = None) -> dict[str, Any]:
+        retrieval_query = (search_query or question).strip()
+        original_query = question.strip()
+
+        chunks = self.retrieve(original_query)
+        if retrieval_query and retrieval_query != original_query:
+            rewritten_chunks = self.retrieve(retrieval_query)
+            chunks = self._rrf_fuse(chunks, rewritten_chunks, config.RAG_TOP_K_RETRIEVE)
+
+        rerank_query = retrieval_query if retrieval_query else original_query
+        if retrieval_query and retrieval_query != original_query:
+            rerank_query = f"{original_query}\n{retrieval_query}"
+
+        best_chunks = self.rerank(rerank_query, chunks)
         return {
             "question": question,
+            "search_query": retrieval_query or original_query,
             "context": best_chunks,
         }

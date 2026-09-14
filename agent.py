@@ -3,6 +3,7 @@ import sys
 
 from config import DEFAULT_PROVIDER, PROVIDERS
 from llm import chat_stream, get_provider
+from query_rewrite import rewrite_query
 from rag_engine import Chunk, RAGEngine
 
 PROMPT_TEMPLATE = """你是一位知识问答助手。请根据对话历史、用户问题和相关文档片段，生成准确、简洁的回答。
@@ -114,7 +115,13 @@ def main() -> None:
             _show_memory(conversation_history)
             continue
 
-        result = engine.query(raw)
+        rewrite = rewrite_query(provider.name, model, raw, conversation_history)
+        if rewrite.error:
+            print(f"[WARN] Query rewrite failed; using original question. Reason: {rewrite.error}")
+        elif rewrite.rewritten:
+            print(f"Search query: {rewrite.search_query}")
+
+        result = engine.query(raw, search_query=rewrite.search_query)
         if not result["context"]:
             print("未找到相关文档片段。")
             continue
