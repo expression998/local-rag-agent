@@ -88,6 +88,7 @@ RAG agent/
 ├── .env.example          # 环境变量模板
 ├── .gitignore
 ├── README.md
+├── CHANGELOG.md           # 更新日志
 ├── knowledge/            # 知识文档目录，放入你的 .md/.txt/.pdf/.docx
 ├── chroma_db/            # ChromaDB 向量数据库（自动生成）
 └── .index_manifest.json  # 索引清单（自动生成）
