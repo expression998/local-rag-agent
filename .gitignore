@@ -12,6 +12,10 @@ build/
 # PDF 文档（版权原因不上传）
 knowledge/*.pdf
 
+# 本地私有知识文档与内部交接文档（见 HANDOFF 约定）
+knowledge/doc.md
+HANDOFF.md
+
 # 向量数据库（自动生成，体积大）
 chroma_db/
 
@@ -29,3 +33,7 @@ Thumbs.db
 
 # uv
 uv.lock
+.uv-cache/
+
+# Agent 运行目录
+.agents/

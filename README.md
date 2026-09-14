@@ -44,11 +44,21 @@ DEEPSEEK_API_KEY=sk-your-deepseek-api-key
 
 ### 启动问答
 
+命令行模式：
+
 ```bash
 uv run agent.py
 ```
 
-首次启动会自动下载嵌入模型并索引 `knowledge/` 目录中的文档。启动后直接输入问题即可：
+或启动 Web 界面（推荐）：
+
+```bash
+uv run web.py
+```
+
+启动后打开 <http://127.0.0.1:8000>，在浏览器中选择供应商与模型、查看知识库状态、流式提问。回答支持 Markdown 渲染，`[来源: ...]` 引用可点击，点击后会高亮右侧对应的文档片段。
+
+首次启动会自动下载嵌入模型并索引 `knowledge/` 目录中的文档。命令行模式下直接输入问题即可：
 
 ```
 请输入问题 > RAG Agent 支持哪些文件格式？
@@ -66,6 +76,9 @@ uv run agent.py -p cli-proxy -m gemini-2.5-flash
 ```text
 RAG agent/
 ├── agent.py              # CLI 入口：交互式问答、Prompt 拼接
+├── web.py                # Web 服务：静态页面 + API，NDJSON 流式输出
+├── static/               # Web 前端（原生 HTML/CSS/JS）
+├── query_rewrite.py      # 多轮对话查询改写（LLM 生成独立检索词）
 ├── config.py             # 配置：模型、路径、检索参数、供应商
 ├── llm.py                # LLM 调用封装（OpenAI SDK）
 ├── rag_engine.py         # RAG 核心：解析→切块→索引→检索→重排序
@@ -75,7 +88,6 @@ RAG agent/
 ├── .env.example          # 环境变量模板
 ├── .gitignore
 ├── README.md
-├── HANDOFF.md            # 内部交接文档
 ├── knowledge/            # 知识文档目录，放入你的 .md/.txt/.pdf/.docx
 ├── chroma_db/            # ChromaDB 向量数据库（自动生成）
 └── .index_manifest.json  # 索引清单（自动生成）
@@ -150,15 +162,18 @@ LLM 在回答时也会标注具体引用：
 ```text
 用户提问
    ↓
+query_rewrite.py      多轮查询改写
+   └── 结合对话历史，把问题改写成独立检索词（可关闭）
+   ↓
 RAGEngine.retrieve()  混合检索
    ├── 向量检索：text2vec-base-chinese 嵌入 → ChromaDB，内积检索，取 top-10
    ├── BM25 检索：jieba 分词 → rank_bm25，取 top-10
-   └── RRF 融合排序 → top-10
+   └── RRF 融合排序 → top-10（原始问题与改写问题两路结果再融合一次）
    ↓
 RAGEngine.rerank()    重排序
    └── BAAI/bge-reranker-base CrossEncoder 打分 → top-3
    ↓
-agent.py              拼接 Prompt
+agent.py / web.py     拼接 Prompt
    └── 对话历史 + 用户问题 + 标注来源的相关片段
    ↓
 llm.py                调用 LLM
@@ -201,6 +216,16 @@ llm.py                调用 LLM
 | --- | --- | --- |
 | `RAG_TOP_K_RETRIEVE` | 10 | 混合检索取回数量 |
 | `RAG_TOP_K_RERANK` | 3 | 重排序后保留数量 |
+
+### 查询改写（环境变量）
+
+多轮对话中，用户的追问往往缺少上下文（如"那第二种呢？"）。查询改写会用 LLM 结合对话历史，把追问补全成独立检索词，再与原始问题各自检索并融合，提升多轮检索的召回。可在 `.env` 中配置：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ENABLE_QUERY_REWRITE` | `true` | 设为 `false` 关闭查询改写 |
+| `QUERY_REWRITE_HISTORY_MESSAGES` | `6` | 改写时参考的最近消息条数 |
+| `QUERY_REWRITE_MAX_TOKENS` | `128` | 改写输出的最大 token 数 |
 
 ### 模型下载
 

@@ -37,8 +37,8 @@ def main() -> None:
         best_chunks = engine.rerank(args.test_query, chunks)
         print(f"检索到 {len(chunks)} 个候选片段，重排序后 top-{len(best_chunks)}：")
         for index, chunk in enumerate(best_chunks, start=1):
-            preview = chunk[:200].replace("\n", " ")
-            print(f"\n[{index}] ({len(chunk)} chars) {preview}...")
+            preview = chunk.text[:200].replace("\n", " ")
+            print(f"\n[{index}] [{chunk.source} - 第{chunk.chunk_index}段] ({len(chunk.text)} chars) {preview}...")
 
 
 if __name__ == "__main__":
