@@ -34,7 +34,11 @@ const state = {
   busy: false,
 };
 
-const els = {
+// Node 环境（单测）下无 DOM：跳过元素绑定，只保留纯函数供导入
+const hasDocument = typeof document !== "undefined";
+
+const els = hasDocument
+  ? {
   providerSelect: document.querySelector("#providerSelect"),
   modelSelect: document.querySelector("#modelSelect"),
   providerState: document.querySelector("#providerState"),
@@ -45,7 +49,11 @@ const els = {
   knowledgeList: document.querySelector("#knowledgeList"),
   refreshKnowledge: document.querySelector("#refreshKnowledge"),
   reindexButton: document.querySelector("#reindexButton"),
+  uploadButton: document.querySelector("#uploadButton"),
+  fileInput: document.querySelector("#fileInput"),
   clearButton: document.querySelector("#clearButton"),
+  themeToggle: document.querySelector("#themeToggle"),
+  sessionSelect: document.querySelector("#sessionSelect"),
   engineState: document.querySelector("#engineState"),
   chatLog: document.querySelector("#chatLog"),
   sourceList: document.querySelector("#sourceList"),
@@ -53,14 +61,17 @@ const els = {
   chatForm: document.querySelector("#chatForm"),
   questionInput: document.querySelector("#questionInput"),
   sendButton: document.querySelector("#sendButton"),
-};
+  dropOverlay: document.querySelector("#dropOverlay"),
+} : {};
 
 async function init() {
   bindEvents();
+  initTheme();
   renderWelcome();
 
   try {
     await Promise.all([loadProviders(), loadKnowledge()]);
+    await loadSessions();
   } catch (error) {
     addMessage("status", `静态预览模式：启动 web.py 后会自动读取模型、知识库和对话接口。`);
     renderOfflineState();
@@ -75,12 +86,34 @@ function bindEvents() {
 
   els.refreshKnowledge.addEventListener("click", loadKnowledge);
   els.reindexButton.addEventListener("click", reindexKnowledge);
-  els.clearButton.addEventListener("click", clearChat);
+  els.clearButton.addEventListener("click", newSession);
   els.chatForm.addEventListener("submit", submitQuestion);
+  els.themeToggle.addEventListener("click", toggleTheme);
+  els.sessionSelect.addEventListener("change", () => {
+    switchSession(els.sessionSelect.value);
+  });
+
+  els.uploadButton.addEventListener("click", () => els.fileInput.click());
+  els.fileInput.addEventListener("change", () => {
+    if (els.fileInput.files?.[0]) {
+      uploadFile(els.fileInput.files[0]);
+    }
+    els.fileInput.value = "";
+  });
+
+  bindDragDrop();
+
   els.chatLog.addEventListener("click", (event) => {
     const citation = event.target.closest(".citation");
     if (citation) {
       highlightSource(citation.dataset.source, citation.dataset.chunk);
+    }
+  });
+
+  els.sourceList.addEventListener("click", (event) => {
+    const card = event.target.closest(".source-card");
+    if (card) {
+      card.classList.toggle("expanded");
     }
   });
 
@@ -94,6 +127,40 @@ function bindEvents() {
     els.questionInput.style.height = "auto";
     els.questionInput.style.height = `${Math.min(190, els.questionInput.scrollHeight)}px`;
   });
+}
+
+function bindDragDrop() {
+  let dragDepth = 0;
+
+  window.addEventListener("dragenter", (event) => {
+    if (!event.dataTransfer?.types?.includes("Files")) return;
+    dragDepth += 1;
+    els.dropOverlay.hidden = false;
+  });
+  window.addEventListener("dragleave", () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) els.dropOverlay.hidden = true;
+  });
+  window.addEventListener("dragover", (event) => event.preventDefault());
+  window.addEventListener("drop", (event) => {
+    event.preventDefault();
+    dragDepth = 0;
+    els.dropOverlay.hidden = true;
+    const file = event.dataTransfer?.files?.[0];
+    if (file) uploadFile(file);
+  });
+}
+
+function initTheme() {
+  const saved = localStorage.getItem("rag-theme");
+  const preferDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = saved || (preferDark ? "dark" : "light");
+}
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("rag-theme", next);
 }
 
 async function loadProviders() {
@@ -162,7 +229,7 @@ async function loadKnowledge() {
 
 function renderKnowledgeFiles(files) {
   if (!files.length) {
-    els.knowledgeList.innerHTML = `<div class="empty">knowledge 目录中还没有可检索文档。</div>`;
+    els.knowledgeList.innerHTML = `<div class="empty">knowledge 目录中还没有可检索文档，可上传或拖入文件。</div>`;
     return;
   }
 
@@ -176,9 +243,154 @@ function renderKnowledgeFiles(files) {
           <strong title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
           <span>${formatBytes(file.size)} · ${modified}</span>
         </div>
+        <button class="file-del" type="button" data-name="${escapeHtml(file.name)}" title="删除该文件及其索引" aria-label="删除 ${escapeHtml(file.name)}">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
+          </svg>
+        </button>
       </article>`;
     })
     .join("");
+
+  els.knowledgeList.querySelectorAll(".file-del").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteFile(button.dataset.name);
+    });
+  });
+}
+
+async function uploadFile(file) {
+  const ext = `.${file.name.split(".").pop()?.toLowerCase()}`;
+  if (![".md", ".txt", ".pdf", ".docx"].includes(ext)) {
+    addMessage("error", `不支持的文件类型：${ext}，仅支持 .md / .txt / .pdf / .docx`);
+    return;
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    addMessage("error", "文件过大，上限 20MB。");
+    return;
+  }
+
+  setBusy(true);
+  addMessage("status", `正在上传并索引 ${file.name} ...`);
+
+  try {
+    const response = await fetch("/api/upload", {
+      method: "POST",
+      headers: { "X-Filename": encodeURIComponent(file.name) },
+      body: file,
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || `上传失败：${response.status}`);
+    }
+    addMessage("status", `已入库 ${data.file}（${data.status.chunk_count} 个片段）。`);
+    await loadKnowledge();
+  } catch (error) {
+    addMessage("error", `上传失败：${error.message}`);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function deleteFile(name) {
+  if (!window.confirm(`确定删除「${name}」及其索引片段？此操作不可恢复。`)) {
+    return;
+  }
+
+  setBusy(true);
+  try {
+    const data = await fetchJson("/api/knowledge/delete", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    if (!data.ok) {
+      throw new Error(data.error || "删除失败");
+    }
+    addMessage("status", `已删除 ${name}（清理 ${data.removed_chunks} 个片段）。`);
+    await loadKnowledge();
+  } catch (error) {
+    addMessage("error", `删除失败：${error.message}`);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function loadSessions() {
+  try {
+    const data = await fetchJson("/api/sessions");
+    const sessions = data.sessions || [];
+    const known = new Set(sessions.map((s) => s.session_id));
+
+    const options = [`<option value="">当前对话（新）</option>`];
+    for (const session of sessions) {
+      const isCurrent = session.session_id === state.sessionId;
+      const label = isCurrent ? `▸ ${session.preview || "当前会话"}` : session.preview || "未命名会话";
+      options.push(
+        `<option value="${escapeHtml(session.session_id)}" ${isCurrent ? "selected" : ""}>${escapeHtml(label)}</option>`
+      );
+    }
+
+    els.sessionSelect.innerHTML = options.join("");
+    if (!known.has(state.sessionId) && state.sessionId) {
+      // 当前内存中的会话尚未落库（还没有完成过一次问答），保持"当前对话"
+      els.sessionSelect.value = "";
+    }
+  } catch {
+    els.sessionSelect.innerHTML = `<option value="">历史会话不可用</option>`;
+  }
+}
+
+async function switchSession(sessionId) {
+  if (!sessionId || sessionId === state.sessionId) {
+    return;
+  }
+
+  try {
+    const data = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
+    state.sessionId = sessionId;
+    els.chatLog.innerHTML = "";
+    chatInner();
+    renderSources([]);
+
+    const messages = data.messages || [];
+    if (!messages.length) {
+      renderWelcome("该会话没有历史消息。");
+      return;
+    }
+
+    for (const message of messages) {
+      const node = addMessage(message.role === "user" ? "user" : "assistant", "");
+      if (message.role === "user") {
+        node.textContent = message.content;
+      } else {
+        node.innerHTML = renderMarkdown(message.content);
+      }
+    }
+    scrollChatToBottom();
+  } catch (error) {
+    addMessage("error", `加载会话失败：${error.message}`);
+    els.sessionSelect.value = "";
+  }
+}
+
+async function newSession() {
+  try {
+    await fetchJson("/api/session/clear", {
+      method: "POST",
+      body: JSON.stringify({ session_id: state.sessionId }),
+    });
+  } catch {
+    // 清理本地界面不依赖后端成功。
+  }
+
+  state.sessionId = createSessionId();
+  els.chatLog.innerHTML = "";
+  chatInner();
+  renderSources([]);
+  renderWelcome("新的对话已开始。");
+  await loadSessions();
+  els.sessionSelect.value = "";
 }
 
 async function reindexKnowledge() {
@@ -202,23 +414,6 @@ async function reindexKnowledge() {
   } finally {
     setBusy(false);
   }
-}
-
-async function clearChat() {
-  try {
-    await fetchJson("/api/session/clear", {
-      method: "POST",
-      body: JSON.stringify({ session_id: state.sessionId }),
-    });
-  } catch {
-    // 清理本地界面不依赖后端成功。
-  }
-
-  state.sessionId = createSessionId();
-  els.chatLog.innerHTML = "";
-  chatInner();
-  renderSources([]);
-  renderWelcome("对话已清空，可以开始新的问题。");
 }
 
 async function submitQuestion(event) {
@@ -287,6 +482,7 @@ async function submitQuestion(event) {
           answerNode.textContent = eventData.answer;
         }
         loadKnowledge().catch(() => {});
+        loadSessions().catch(() => {});
       }
 
       if (eventData.event === "error") {
@@ -348,13 +544,14 @@ function renderSources(sources) {
   els.sourceList.className = "source-list";
   els.sourceList.innerHTML = sources
     .map((source, index) => {
-      return `<article class="source-card" data-source="${escapeHtml(source.source)}" data-chunk="${escapeHtml(source.chunk_index)}">
+      return `<article class="source-card" data-source="${escapeHtml(source.source)}" data-chunk="${escapeHtml(source.chunk_index)}" title="点击展开/收起全文">
         <header>
           <span class="source-num">${index + 1}</span>
           <strong title="${escapeHtml(source.source)}">${escapeHtml(source.source)}</strong>
           <span class="source-chip">片段 ${escapeHtml(source.chunk_index)}</span>
         </header>
         <p>${escapeHtml(source.text)}</p>
+        <span class="expand-hint">点击查看全文</span>
       </article>`;
     })
     .join("");
@@ -652,4 +849,8 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-init();
+export { escapeHtml, shortenName, inlineMarkdown, renderMarkdown, renderStreamingMarkdown, CITATION_RE };
+
+if (hasDocument) {
+  init();
+}

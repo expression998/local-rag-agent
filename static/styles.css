@@ -1093,6 +1093,161 @@ select:focus-visible {
   opacity: 0.7;
 }
 
+/* ---------- 深色模式 ---------- */
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --surface: #151b2e;
+  --surface-2: #1b2338;
+  --border: rgba(148, 163, 184, 0.14);
+  --border-strong: rgba(148, 163, 184, 0.28);
+  --text: #e2e8f0;
+  --text-2: #b6c2d9;
+  --muted: #8494ad;
+  --accent: #818cf8;
+  --accent-strong: #a5b4fc;
+  --accent-soft: rgba(99, 102, 241, 0.16);
+  --accent-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  --success: #34d399;
+  --success-soft: rgba(16, 185, 129, 0.12);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="dark"] body,
+body[data-theme="dark"] {
+  background:
+    radial-gradient(1100px 700px at 88% -12%, rgba(99, 102, 241, 0.14), transparent 62%),
+    radial-gradient(900px 620px at -8% 108%, rgba(16, 185, 129, 0.08), transparent 58%),
+    var(--bg);
+}
+
+[data-theme="dark"] .sidebar,
+[data-theme="dark"] .sources-panel {
+  background: rgba(21, 27, 46, 0.72);
+}
+
+[data-theme="dark"] .message.assistant pre {
+  background: #060a16;
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] .status-pill {
+  background: var(--surface);
+}
+
+[data-theme="dark"] .source-card,
+[data-theme="dark"] .welcome-cards button,
+[data-theme="dark"] .composer-field {
+  background: var(--surface);
+}
+
+/* ---------- 会话选择器 ---------- */
+
+.session-select {
+  appearance: none;
+  height: 36px;
+  max-width: 180px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7a93' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 13px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 0 30px 0 12px;
+  cursor: pointer;
+}
+
+.session-select:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+/* ---------- 文件删除按钮 ---------- */
+
+.file-del {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 130ms ease, color 130ms ease;
+}
+
+.file-del svg {
+  width: 14px;
+  height: 14px;
+}
+
+.file-del:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ---------- 拖拽上传遮罩 ---------- */
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(4px);
+}
+
+.drop-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 2px dashed rgba(99, 102, 241, 0.65);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--accent-strong);
+  font-size: 16px;
+  font-weight: 700;
+  padding: 28px 40px;
+}
+
+[data-theme="dark"] .drop-card {
+  background: rgba(21, 27, 46, 0.95);
+}
+
+/* ---------- 引用片段展开 ---------- */
+
+.source-card {
+  cursor: pointer;
+}
+
+.source-card p {
+  cursor: inherit;
+}
+
+.source-card.expanded p {
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+
+.source-card .expand-hint {
+  margin-top: 6px;
+  color: var(--accent-strong);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.source-card.expanded .expand-hint {
+  color: var(--muted);
+}
+
 /* ---------- 响应式 ---------- */
 
 @media (max-width: 1220px) {
