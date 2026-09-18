@@ -38,7 +38,8 @@ def rewrite_query(
     history: list[dict],
 ) -> QueryRewriteResult:
     original = question.strip()
-    if not config.ENABLE_QUERY_REWRITE or not original:
+    if not config.ENABLE_QUERY_REWRITE or not original or not history:
+        # 无历史时改写没有可补全的指代，跳过这次 LLM 调用
         return QueryRewriteResult(original_query=original, search_query=original, rewritten=False)
 
     prompt = QUERY_REWRITE_PROMPT.format(

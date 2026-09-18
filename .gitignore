@@ -37,3 +37,4 @@ uv.lock
 
 # Agent 运行目录
 .agents/
+.zcode/

@@ -4,6 +4,8 @@ from openai import OpenAI
 
 from config import LLMProvider, PROVIDERS
 
+REQUEST_TIMEOUT_SECONDS = 120.0
+
 _PROVIDER_CACHE: dict[str, OpenAI] = {}
 
 
@@ -12,6 +14,7 @@ def _get_client(provider: LLMProvider) -> OpenAI:
         _PROVIDER_CACHE[provider.name] = OpenAI(
             api_key=provider.api_key,
             base_url=provider.base_url,
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )
     return _PROVIDER_CACHE[provider.name]
 

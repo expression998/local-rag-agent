@@ -4,6 +4,7 @@ import argparse
 import json
 import mimetypes
 import uuid
+from collections import OrderedDict
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +22,7 @@ BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 SUPPORTED_UPLOAD_EXTS = {".md", ".txt", ".pdf", ".docx"}
 HISTORY_LIMIT = 12
+MAX_SESSIONS = 128
 
 PROMPT_TEMPLATE = """你是一位严谨的知识库问答助手。
 请根据对话历史、用户问题和相关文档片段，生成准确、简洁、可追溯的中文回答。
@@ -52,7 +54,7 @@ class AppState:
     def __init__(self) -> None:
         self._engine: RAGEngine | None = None
         self._engine_lock = Lock()
-        self._sessions: dict[str, list[dict[str, str]]] = {}
+        self._sessions: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
         self._sessions_lock = Lock()
 
     def engine(self) -> RAGEngine:
@@ -68,17 +70,34 @@ class AppState:
                 self._engine = RAGEngine()
             return self._engine.index_directory(force=force)
 
+    def engine_loaded(self) -> bool:
+        with self._engine_lock:
+            return self._engine is not None
+
+    def chunk_count(self) -> int | None:
+        with self._engine_lock:
+            if self._engine is None:
+                return None
+            return self._engine.collection.count()
+
     def history(self, session_id: str) -> list[dict[str, str]]:
         with self._sessions_lock:
-            return list(self._sessions.get(session_id, []))
+            history = self._sessions.get(session_id)
+            if history is None:
+                return []
+            self._sessions.move_to_end(session_id)
+            return list(history)
 
     def append_history(self, session_id: str, question: str, answer: str) -> None:
         with self._sessions_lock:
             history = self._sessions.setdefault(session_id, [])
+            self._sessions.move_to_end(session_id)
             history.append({"role": "user", "content": question})
             history.append({"role": "assistant", "content": answer})
             if len(history) > HISTORY_LIMIT:
                 del history[: len(history) - HISTORY_LIMIT]
+            while len(self._sessions) > MAX_SESSIONS:
+                self._sessions.popitem(last=False)
 
     def clear_history(self, session_id: str) -> None:
         with self._sessions_lock:
@@ -222,10 +241,21 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
         self.end_headers()
 
-        def write_event(event: str, data: dict[str, Any]) -> None:
-            line = json.dumps({"event": event, **data}, ensure_ascii=False) + "\n"
-            self.wfile.write(line.encode("utf-8"))
-            self.wfile.flush()
+        client_gone = False
+
+        def write_event(event: str, data: dict[str, Any]) -> bool:
+            nonlocal client_gone
+            if client_gone:
+                return False
+            try:
+                line = json.dumps({"event": event, **data}, ensure_ascii=False) + "\n"
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # 客户端已断开：停止写流。半截回答不入会话历史。
+                client_gone = True
+                return False
 
         if not question:
             write_event("error", {"message": "请输入问题。"})
@@ -235,7 +265,8 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
             history = STATE.history(session_id)
             rewrite = rewrite_query(provider_name, model, question, history)
 
-            write_event("status", {"message": "正在检索知识库..."})
+            if not write_event("status", {"message": "正在检索知识库..."}):
+                return
             engine = STATE.engine()
             result = engine.query(question, search_query=rewrite.search_query)
             chunks = result["context"]
@@ -257,7 +288,8 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
                 temperature=0.3,
             ):
                 answer += token
-                write_event("token", {"token": token})
+                if not write_event("token", {"token": token}):
+                    return
 
             STATE.append_history(session_id, question, answer)
             write_event("done", {"answer": answer, "session_id": session_id})
@@ -275,14 +307,11 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
         return providers
 
     def _status_payload(self) -> dict[str, Any]:
-        collection_count = None
-        if STATE._engine is not None:
-            collection_count = STATE._engine.collection.count()
         return {
-            "engine_loaded": STATE._engine is not None,
+            "engine_loaded": STATE.engine_loaded(),
             "knowledge_dir": str(config.KNOWLEDGE_DIR),
             "file_count": len(knowledge_files()),
-            "chunk_count": collection_count,
+            "chunk_count": STATE.chunk_count(),
         }
 
 
