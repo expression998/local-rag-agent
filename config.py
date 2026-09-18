@@ -19,6 +19,12 @@ CHROMA_SPACE = "ip"
 RAG_TOP_K_RETRIEVE = 10
 RAG_TOP_K_RERANK = 3
 
+# 相邻切块之间的重叠字符数（按整句对齐），缓解长文档跨块信息丢失
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "80"))
+
+# 索引格式版本：嵌入归一化等改变向量语义的升级需要递增此值触发自动重建
+INDEX_VERSION = 2
+
 ENABLE_QUERY_REWRITE = os.getenv("ENABLE_QUERY_REWRITE", "true").lower() not in {"0", "false", "no", "off"}
 QUERY_REWRITE_HISTORY_MESSAGES = int(os.getenv("QUERY_REWRITE_HISTORY_MESSAGES", "6"))
 QUERY_REWRITE_MAX_TOKENS = int(os.getenv("QUERY_REWRITE_MAX_TOKENS", "128"))

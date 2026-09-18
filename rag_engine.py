@@ -1,4 +1,5 @@
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,10 +22,12 @@ class Chunk:
 MANIFEST_PATH = config.BASE_DIR / ".index_manifest.json"
 SUPPORTED_EXTS = ("*.md", "*.txt", "*.pdf", "*.docx")
 CHROMA_BATCH_SIZE = 4000
+TEXT_ENCODINGS = ("utf-8-sig", "gb18030")
 
 
 class RAGEngine:
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self.embedder = SentenceTransformer(config.EMBEDDING_MODEL, local_files_only=True)
         self.reranker: CrossEncoder | None = self._load_reranker()
 
@@ -36,6 +39,7 @@ class RAGEngine:
 
         self.bm25: BM25Okapi | None = None
         self.bm25_docs: list[str] = []
+        self.bm25_metadatas: list[dict | None] = []
 
     def _load_reranker(self) -> CrossEncoder | None:
         try:
@@ -55,7 +59,14 @@ class RAGEngine:
             return None
 
     def _read_md_txt(self, path: Path) -> str:
-        return path.read_text(encoding="utf-8")
+        for encoding in TEXT_ENCODINGS:
+            try:
+                return path.read_text(encoding=encoding)
+            except UnicodeDecodeError:
+                continue
+        raise ValueError(
+            f"无法解码 {path.name}（已尝试 {'/'.join(TEXT_ENCODINGS)}），请转换为 UTF-8 后重试"
+        )
 
     def _read_pdf(self, path: Path) -> str:
         from pypdf import PdfReader
@@ -94,12 +105,31 @@ class RAGEngine:
                     current += sentence
                 else:
                     chunks.append(current)
-                    current = sentence
+                    tail = self._tail_overlap(current, config.CHUNK_OVERLAP)
+                    if tail and len(tail) + len(sentence) <= max_len:
+                        current = tail + sentence
+                    else:
+                        current = sentence
 
             if current:
                 chunks.append(current)
 
         return [chunk for chunk in chunks if chunk.strip()]
+
+    def _tail_overlap(self, text: str, limit: int) -> str:
+        """取文本末尾若干完整句子，总长不超过 limit；用于相邻块之间的重叠。"""
+        if limit <= 0:
+            return ""
+        tail_parts: list[str] = []
+        total = 0
+        for part in reversed(self._split_sentences(text)):
+            if total + len(part) > limit and tail_parts:
+                break
+            tail_parts.insert(0, part)
+            total += len(part)
+            if total >= limit:
+                break
+        return "".join(tail_parts)
 
     def _normalize_paragraphs(self, text: str) -> list[str]:
         lines = [line.strip() for line in text.splitlines()]
@@ -138,24 +168,43 @@ class RAGEngine:
         return line.isdigit() or (line.startswith("第") and line.endswith("页"))
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        return self.embedder.encode(texts, normalize_embeddings=False).tolist()
+        return self.embedder.encode(texts, normalize_embeddings=True).tolist()
 
     def _build_bm25_index(self) -> None:
-        all_docs = self.collection.get()["documents"]
+        all_data = self.collection.get()
+        all_docs = all_data["documents"] or []
         if all_docs:
             tokenized = [list(jieba.cut(d)) for d in all_docs]
             self.bm25 = BM25Okapi(tokenized)
             self.bm25_docs = list(all_docs)
+            self.bm25_metadatas = list(all_data["metadatas"] or [None] * len(all_docs))
         else:
             self.bm25 = None
             self.bm25_docs = []
+            self.bm25_metadatas = []
 
-    def _load_manifest(self) -> dict[str, float]:
-        if MANIFEST_PATH.exists():
-            return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-        return {}
+    @staticmethod
+    def _fresh_manifest() -> dict:
+        """清单结构：{"version": 索引版本, "files": {文件名: mtime}}。文件名与元数据键完全隔离。"""
+        return {"version": config.INDEX_VERSION, "files": {}}
 
-    def _save_manifest(self, manifest: dict[str, float]) -> None:
+    def _load_manifest(self) -> dict:
+        if not MANIFEST_PATH.exists():
+            return self._fresh_manifest() | {"version": 0}
+        try:
+            data = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return self._fresh_manifest() | {"version": 0}
+        if not isinstance(data, dict):
+            return self._fresh_manifest() | {"version": 0}
+        files = data.get("files")
+        version = data.get("version", 0)
+        return {
+            "version": version if isinstance(version, int) else 0,
+            "files": files if isinstance(files, dict) else {},
+        }
+
+    def _save_manifest(self, manifest: dict) -> None:
         MANIFEST_PATH.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -164,12 +213,16 @@ class RAGEngine:
     def _file_mtime(self, path: Path) -> float:
         return path.stat().st_mtime
 
-    def _needs_index(self, path: Path, manifest: dict[str, float]) -> bool:
+    @staticmethod
+    def _needs_index(path: Path, files: dict[str, float]) -> bool:
         name = path.name
-        mtime = self._file_mtime(path)
-        return name not in manifest or manifest[name] != mtime
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return False
+        return name not in files or files[name] != mtime
 
-    def index_file(self, file_path: str, manifest: dict[str, float] | None = None) -> int:
+    def index_file(self, file_path: str, files: dict[str, float] | None = None) -> int:
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -192,40 +245,64 @@ class RAGEngine:
                 metadatas=metadatas[i : i + CHROMA_BATCH_SIZE],
             )
 
-        if manifest is not None:
-            manifest[source] = self._file_mtime(path)
+        if files is not None:
+            files[source] = self._file_mtime(path)
 
         return len(chunks)
 
     def index_directory(self, dir_path: str | None = None, force: bool = False) -> int:
         target = Path(dir_path) if dir_path else config.KNOWLEDGE_DIR
-        manifest = {} if force else self._load_manifest()
 
-        if force:
-            self.clear_index()
+        with self._lock:
+            manifest = self._fresh_manifest() if force else self._load_manifest()
+            if manifest["version"] != config.INDEX_VERSION:
+                if manifest["files"]:
+                    print("  索引格式已升级，自动全量重建...")
+                manifest = self._fresh_manifest()
+                force = True
 
-        total = 0
-        for pattern in SUPPORTED_EXTS:
-            for fp in sorted(target.glob(pattern)):
-                if not force and not self._needs_index(fp, manifest):
-                    continue
+            files = manifest["files"]
 
-                self._delete_file_chunks(fp.name)
-                count = self.index_file(str(fp), manifest)
-                status = "indexed" if count else "empty"
-                print(f"  {status}: {fp.name} -> {count} chunks")
-                total += count
+            if force:
+                self.clear_index()
 
-        self._save_manifest(manifest)
-        self._build_bm25_index()
+            current_files = {
+                fp.name
+                for pattern in SUPPORTED_EXTS
+                for fp in target.glob(pattern)
+            }
+            for name in [n for n in files if n not in current_files]:
+                self._delete_file_chunks(name)
+                del files[name]
+                print(f"  removed stale index: {name}")
 
-        if not force and total == 0:
-            count = self.collection.count()
-            if count:
-                print(f"  no updates needed, {count} chunks available")
-                return count
+            total = 0
+            for pattern in SUPPORTED_EXTS:
+                for fp in sorted(target.glob(pattern)):
+                    if not force and not self._needs_index(fp, files):
+                        continue
 
-        return total
+                    self._delete_file_chunks(fp.name)
+                    try:
+                        count = self.index_file(str(fp), files)
+                    except Exception as exc:
+                        print(f"  [WARN] 跳过无法解析的文件 {fp.name}: {exc}")
+                        files.pop(fp.name, None)
+                        continue
+                    status = "indexed" if count else "empty"
+                    print(f"  {status}: {fp.name} -> {count} chunks")
+                    total += count
+
+            self._save_manifest(manifest)
+            self._build_bm25_index()
+
+            if not force and total == 0:
+                count = self.collection.count()
+                if count:
+                    print(f"  no updates needed, {count} chunks available")
+                    return count
+
+            return total
 
     def _delete_file_chunks(self, source: str) -> None:
         existing = self.collection.get(where={"source": source})
@@ -238,52 +315,51 @@ class RAGEngine:
             self.collection.delete(ids=all_ids)
         self.bm25 = None
         self.bm25_docs = []
+        self.bm25_metadatas = []
 
     def retrieve(self, query: str, top_k: int = config.RAG_TOP_K_RETRIEVE) -> list[Chunk]:
-        collection_count = self.collection.count()
-        if collection_count == 0:
-            return []
+        with self._lock:
+            collection_count = self.collection.count()
+            if collection_count == 0:
+                return []
 
-        n_results = min(top_k, collection_count)
-        query_emb = self.embedder.encode([query], normalize_embeddings=False).tolist()
-        vec_results = self.collection.query(
-            query_embeddings=query_emb,
-            n_results=n_results,
-            include=["documents", "metadatas"],
-        )
-        vec_chunks = self._results_to_chunks(
-            vec_results["documents"][0] if vec_results["documents"] else [],
-            vec_results["metadatas"][0] if vec_results["metadatas"] else [],
-        )
+            n_results = min(top_k, collection_count)
+            query_emb = self.embedder.encode([query], normalize_embeddings=True).tolist()
+            vec_results = self.collection.query(
+                query_embeddings=query_emb,
+                n_results=n_results,
+                include=["documents", "metadatas"],
+            )
+            vec_chunks = self._results_to_chunks(
+                vec_results["documents"][0] if vec_results["documents"] else [],
+                vec_results["metadatas"][0] if vec_results["metadatas"] else [],
+            )
 
-        if self.bm25 is None:
-            self._build_bm25_index()
+            if self.bm25 is None:
+                self._build_bm25_index()
 
-        bm25_chunks: list[Chunk] = []
-        if self.bm25:
-            tokenized_query = list(jieba.cut(query))
-            bm25_scores = self.bm25.get_scores(tokenized_query)
-            bm25_indices = sorted(
-                range(len(bm25_scores)),
-                key=lambda i: bm25_scores[i],
-                reverse=True,
-            )[:top_k]
-
-            all_data = self.collection.get()
-            all_docs = all_data["documents"]
-            all_metadatas = all_data["metadatas"]
-            if all_docs:
-                bm25_chunks = [
-                    Chunk(
-                        text=all_docs[i],
-                        source=all_metadatas[i]["source"] if all_metadatas and all_metadatas[i] else "unknown",
-                        chunk_index=all_metadatas[i]["chunk"] if all_metadatas and all_metadatas[i] else 0,
+            bm25_chunks: list[Chunk] = []
+            if self.bm25:
+                tokenized_query = list(jieba.cut(query))
+                bm25_scores = self.bm25.get_scores(tokenized_query)
+                ranked_indices = sorted(
+                    range(len(bm25_scores)),
+                    key=lambda i: bm25_scores[i],
+                    reverse=True,
+                )
+                for i in ranked_indices:
+                    if len(bm25_chunks) >= top_k or bm25_scores[i] <= 0:
+                        break
+                    metadata = self.bm25_metadatas[i] if i < len(self.bm25_metadatas) else None
+                    bm25_chunks.append(
+                        Chunk(
+                            text=self.bm25_docs[i],
+                            source=metadata.get("source", "unknown") if metadata else "unknown",
+                            chunk_index=metadata.get("chunk", 0) if metadata else 0,
+                        )
                     )
-                    for i in bm25_indices
-                    if i < len(all_docs)
-                ]
 
-        return self._rrf_fuse(vec_chunks, bm25_chunks, top_k)
+            return self._rrf_fuse(vec_chunks, bm25_chunks, top_k)
 
     @staticmethod
     def _results_to_chunks(docs: list[str], metadatas: list[dict]) -> list[Chunk]:
