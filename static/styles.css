@@ -1205,6 +1205,11 @@ body[data-theme="dark"] {
   backdrop-filter: blur(4px);
 }
 
+/* display:grid 会覆盖 UA 对 [hidden] 的 display:none，必须显式恢复隐藏语义 */
+.drop-overlay[hidden] {
+  display: none;
+}
+
 .drop-card {
   display: flex;
   align-items: center;
