@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import mimetypes
 import uuid
 from collections import OrderedDict
@@ -11,11 +12,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from urllib.parse import unquote
 
 import config
 from llm import chat_stream, list_providers
 from query_rewrite import rewrite_query
 from rag_engine import Chunk, RAGEngine
+from sessions import SessionStore
 
 
 BASE_DIR = Path(__file__).parent
@@ -23,6 +26,7 @@ STATIC_DIR = BASE_DIR / "static"
 SUPPORTED_UPLOAD_EXTS = {".md", ".txt", ".pdf", ".docx"}
 HISTORY_LIMIT = 12
 MAX_SESSIONS = 128
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 PROMPT_TEMPLATE = """你是一位严谨的知识库问答助手。
 请根据对话历史、用户问题和相关文档片段，生成准确、简洁、可追溯的中文回答。
@@ -56,6 +60,7 @@ class AppState:
         self._engine_lock = Lock()
         self._sessions: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
         self._sessions_lock = Lock()
+        self.store = SessionStore()
 
     def engine(self) -> RAGEngine:
         with self._engine_lock:
@@ -98,10 +103,12 @@ class AppState:
                 del history[: len(history) - HISTORY_LIMIT]
             while len(self._sessions) > MAX_SESSIONS:
                 self._sessions.popitem(last=False)
+        self.store.append(session_id, question, answer)
 
     def clear_history(self, session_id: str) -> None:
         with self._sessions_lock:
             self._sessions.pop(session_id, None)
+        self.store.delete(session_id)
 
 
 STATE = AppState()
@@ -158,6 +165,18 @@ def knowledge_files() -> list[dict[str, Any]]:
     return files
 
 
+def remove_knowledge_file(name: str) -> int:
+    """删除知识文件并移除其索引片段。返回移除的片段数。"""
+    safe = Path(name).name
+    if not safe or safe != name or safe.startswith("."):
+        raise ValueError("非法文件名")
+    target = config.KNOWLEDGE_DIR / safe
+    if not target.is_file():
+        raise ValueError(f"文件不存在：{safe}")
+    target.unlink()
+    return STATE.engine().remove_file(safe)
+
+
 class RAGWebHandler(SimpleHTTPRequestHandler):
     server_version = "RAGWeb/0.1"
 
@@ -177,12 +196,36 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/status"):
             self.send_json(self._status_payload())
             return
+        if self.path.startswith("/api/sessions"):
+            parts = [p for p in self.path.split("?")[0].split("/") if p]
+            if len(parts) == 2:
+                self.send_json({"sessions": STATE.store.list_sessions()})
+                return
+            if len(parts) == 4 and parts[3] == "messages":
+                self.send_json({"messages": STATE.store.messages(parts[2])})
+                return
+            self.send_error(HTTPStatus.NOT_FOUND, "Session endpoint not found")
+            return
         return super().do_GET()
 
     def do_POST(self) -> None:
         if self.path.startswith("/api/chat"):
             payload = self.read_json_body()
             self.stream_chat(payload)
+            return
+        if self.path.startswith("/api/upload"):
+            self.handle_upload()
+            return
+        if self.path.startswith("/api/knowledge/delete"):
+            payload = self.read_json_body()
+            name = str(payload.get("name") or "")
+            try:
+                removed = remove_knowledge_file(name)
+                self.send_json({"ok": True, "removed_chunks": removed, "status": self._status_payload()})
+            except ValueError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         if self.path.startswith("/api/reindex"):
             payload = self.read_json_body()
@@ -201,6 +244,31 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True})
             return
         self.send_error(HTTPStatus.NOT_FOUND, "API endpoint not found")
+
+    def handle_upload(self) -> None:
+        try:
+            raw_name = unquote(self.headers.get("X-Filename", "") or "")
+            name = Path(raw_name).name
+            if not name or name.startswith("."):
+                raise ValueError("缺少合法文件名")
+            if Path(name).suffix.lower() not in SUPPORTED_UPLOAD_EXTS:
+                raise ValueError(f"不支持的文件类型，仅支持 {' '.join(sorted(SUPPORTED_UPLOAD_EXTS))}")
+
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length <= 0:
+                raise ValueError("上传内容为空")
+            if length > MAX_UPLOAD_BYTES:
+                raise ValueError(f"文件过大（上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB）")
+
+            data = self.rfile.read(length)
+            target = config.KNOWLEDGE_DIR / name
+            target.write_bytes(data)
+            count = STATE.reindex(force=False)
+            self.send_json({"ok": True, "file": name, "indexed_chunks": count, "status": self._status_payload()})
+        except ValueError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def end_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -316,6 +384,10 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
     parser = argparse.ArgumentParser(description="启动 RAG Agent Web 前端")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
