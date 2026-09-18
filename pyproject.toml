@@ -1,6 +1,6 @@
 [project]
 name = "rag-agent"
-version = "0.3.0"
+version = "0.4.0"
 description = "基于 RAG 的本地知识问答 Agent"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,4 +12,9 @@ dependencies = [
     "pypdf>=5.4.0",
     "rank-bm25>=0.2.2",
     "jieba>=0.42.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
 ]

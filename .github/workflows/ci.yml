@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Python syntax check
+        run: uv run python -m py_compile agent.py web.py llm.py config.py query_rewrite.py rag_engine.py rebuild_full.py sessions.py
+
+      - name: Run pytest
+        run: uv run pytest tests/ -v
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Frontend syntax check
+        run: node --check static/app.js
+
+      - name: Markdown renderer tests
+        run: node tests/static/test_markdown.mjs
