@@ -1,15 +1,21 @@
+from __future__ import annotations
+
 import json
+import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import chromadb
 import jieba
 from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder, SentenceTransformer
 
 import config
+
+if TYPE_CHECKING:
+    from sentence_transformers import CrossEncoder
+
+logger = logging.getLogger("rag_engine")
 
 
 @dataclass
@@ -27,6 +33,11 @@ TEXT_ENCODINGS = ("utf-8-sig", "gb18030")
 
 class RAGEngine:
     def __init__(self) -> None:
+        # 重依赖（torch/chromadb）延迟到实例化时才导入，模块导入保持轻量，
+        # CLI --help 与单元测试不再拉起整套科学计算栈。
+        import chromadb
+        from sentence_transformers import SentenceTransformer
+
         self._lock = threading.RLock()
         self.embedder = SentenceTransformer(config.EMBEDDING_MODEL, local_files_only=True)
         self.reranker: CrossEncoder | None = self._load_reranker()
@@ -42,18 +53,14 @@ class RAGEngine:
         self.bm25_metadatas: list[dict | None] = []
 
     def _load_reranker(self) -> CrossEncoder | None:
+        from sentence_transformers import CrossEncoder
+
         try:
             return CrossEncoder(config.CROSS_ENCODER_MODEL, local_files_only=True)
         except OSError as exc:
-            print(
-                "[WARN] Reranker model is unavailable or incomplete. "
-                "Falling back to hybrid retrieval without reranking."
-            )
-            print(f"[WARN] Model: {config.CROSS_ENCODER_MODEL}")
-            print(f"[WARN] Reason: {exc}")
-            print(
-                "[HINT] Download it with: uv run python -c "
-                "\"from sentence_transformers import CrossEncoder; "
+            logger.warning("Reranker model unavailable, falling back to hybrid retrieval only: %s", exc)
+            logger.warning(
+                "Download it with: uv run python -c \"from sentence_transformers import CrossEncoder; "
                 f"CrossEncoder('{config.CROSS_ENCODER_MODEL}')\""
             )
             return None
@@ -257,7 +264,7 @@ class RAGEngine:
             manifest = self._fresh_manifest() if force else self._load_manifest()
             if manifest["version"] != config.INDEX_VERSION:
                 if manifest["files"]:
-                    print("  索引格式已升级，自动全量重建...")
+                    logger.info("索引格式已升级，自动全量重建...")
                 manifest = self._fresh_manifest()
                 force = True
 
@@ -274,7 +281,7 @@ class RAGEngine:
             for name in [n for n in files if n not in current_files]:
                 self._delete_file_chunks(name)
                 del files[name]
-                print(f"  removed stale index: {name}")
+                logger.info("removed stale index: %s", name)
 
             total = 0
             for pattern in SUPPORTED_EXTS:
@@ -286,11 +293,11 @@ class RAGEngine:
                     try:
                         count = self.index_file(str(fp), files)
                     except Exception as exc:
-                        print(f"  [WARN] 跳过无法解析的文件 {fp.name}: {exc}")
+                        logger.warning("跳过无法解析的文件 %s: %s", fp.name, exc)
                         files.pop(fp.name, None)
                         continue
                     status = "indexed" if count else "empty"
-                    print(f"  {status}: {fp.name} -> {count} chunks")
+                    logger.info("%s: %s -> %s chunks", status, fp.name, count)
                     total += count
 
             self._save_manifest(manifest)
@@ -299,7 +306,7 @@ class RAGEngine:
             if not force and total == 0:
                 count = self.collection.count()
                 if count:
-                    print(f"  no updates needed, {count} chunks available")
+                    logger.info("no updates needed, %s chunks available", count)
                     return count
 
             return total
@@ -316,6 +323,19 @@ class RAGEngine:
         self.bm25 = None
         self.bm25_docs = []
         self.bm25_metadatas = []
+
+    def remove_file(self, name: str) -> int:
+        """从索引中移除某个文件的全部片段，并同步清单。返回移除的片段数。"""
+        with self._lock:
+            existing = self.collection.get(where={"source": name})
+            removed = len(existing["ids"]) if existing["ids"] else 0
+            if removed:
+                self.collection.delete(ids=existing["ids"])
+            manifest = self._load_manifest()
+            manifest["files"].pop(name, None)
+            self._save_manifest(manifest)
+            self._build_bm25_index()
+            return removed
 
     def retrieve(self, query: str, top_k: int = config.RAG_TOP_K_RETRIEVE) -> list[Chunk]:
         with self._lock:
