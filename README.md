@@ -1,5 +1,7 @@
 # RAG Agent
 
+[![CI](https://github.com/expression998/local-rag-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/expression998/local-rag-agent/actions/workflows/ci.yml)
+
 一个本地运行的检索增强生成（RAG）知识问答系统。你可以把文档放进 `knowledge/` 目录，通过命令行提问，系统会从文档中找到相关内容并生成回答。
 
 ## 快速开始
@@ -58,6 +60,14 @@ uv run web.py
 
 启动后打开 <http://127.0.0.1:8000>，在浏览器中选择供应商与模型、查看知识库状态、流式提问。回答支持 Markdown 渲染，`[来源: ...]` 引用可点击，点击后会高亮右侧对应的文档片段。
 
+Web 界面还支持：
+
+- **上传文档**：点"上传文档"按钮，或直接把文件拖进页面任意位置（.md/.txt/.pdf/.docx，≤20MB），入库后自动索引
+- **删除文档**：知识库文件列表中的删除按钮，同步清理索引片段
+- **多会话**：对话自动落盘（`sessions.db`），顶栏下拉切换历史会话或开新对话，重启不丢
+- **深色模式**：顶栏一键切换，跟随系统偏好
+- **引用展开**：点击右侧来源卡片查看片段全文
+
 首次启动会自动下载嵌入模型并索引 `knowledge/` 目录中的文档。命令行模式下直接输入问题即可：
 
 ```
@@ -79,19 +89,29 @@ RAG agent/
 ├── web.py                # Web 服务：静态页面 + API，NDJSON 流式输出
 ├── static/               # Web 前端（原生 HTML/CSS/JS）
 ├── query_rewrite.py      # 多轮对话查询改写（LLM 生成独立检索词）
+├── sessions.py           # 会话持久化（SQLite，标准库）
 ├── config.py             # 配置：模型、路径、检索参数、供应商
 ├── llm.py                # LLM 调用封装（OpenAI SDK）
 ├── rag_engine.py         # RAG 核心：解析→切块→索引→检索→重排序
 ├── rebuild_full.py       # 完整重建索引脚本
+├── tests/                # pytest 套件 + Node 渲染器测试
+├── .github/workflows/    # GitHub Actions CI
 ├── pyproject.toml        # 项目依赖声明
 ├── .env                  # API Key 与默认供应商（已 gitignore）
 ├── .env.example          # 环境变量模板
 ├── .gitignore
 ├── README.md
-├── CHANGELOG.md           # 更新日志
+├── CHANGELOG.md          # 更新日志
 ├── knowledge/            # 知识文档目录，放入你的 .md/.txt/.pdf/.docx
 ├── chroma_db/            # ChromaDB 向量数据库（自动生成）
 └── .index_manifest.json  # 索引清单（自动生成）
+```
+
+### 运行测试
+
+```bash
+uv run pytest tests/ -v      # Python 单元测试
+node tests/static/test_markdown.mjs   # 前端 Markdown 渲染器测试
 ```
 
 ## 使用说明
