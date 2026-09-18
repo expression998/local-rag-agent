@@ -15,7 +15,15 @@ from typing import Any
 from urllib.parse import unquote
 
 import config
-from llm import chat_stream, list_providers
+from llm import (
+    chat_stream,
+    fetch_models,
+    get_effective_provider,
+    list_providers,
+    mask_key,
+    save_fetched_models,
+    set_provider_config,
+)
 from query_rewrite import rewrite_query
 from rag_engine import Chunk, RAGEngine
 from sessions import SessionStore
@@ -190,6 +198,22 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/providers"):
             self.send_json({"providers": self._providers_payload(), "default_provider": config.DEFAULT_PROVIDER})
             return
+        if self.path.startswith("/api/models"):
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(self.path).query)
+            provider_name = (query.get("provider") or [""])[0]
+            try:
+                models = fetch_models(provider_name)
+                self.send_json({"ok": True, "provider": provider_name, "models": models})
+            except ValueError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self.send_json(
+                    {"ok": False, "error": f"获取模型失败：{exc}"},
+                    status=HTTPStatus.BAD_GATEWAY,
+                )
+            return
         if self.path.startswith("/api/knowledge"):
             self.send_json({"files": knowledge_files()})
             return
@@ -212,6 +236,9 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/chat"):
             payload = self.read_json_body()
             self.stream_chat(payload)
+            return
+        if self.path.startswith("/api/provider/config"):
+            self.handle_provider_config()
             return
         if self.path.startswith("/api/upload"):
             self.handle_upload()
@@ -244,6 +271,40 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True})
             return
         self.send_error(HTTPStatus.NOT_FOUND, "API endpoint not found")
+
+    def handle_provider_config(self) -> None:
+        """保存供应商 Key/地址并立即尝试拉取模型列表。"""
+        try:
+            payload = self.read_json_body()
+            name = str(payload.get("provider") or "")
+            api_key = str(payload.get("api_key") or "").strip() or None
+            base_url = str(payload.get("base_url") or "").strip() or None
+            clear = bool(payload.get("clear", False))
+
+            set_provider_config(name, api_key=api_key, base_url=base_url, clear=clear)
+            error = None
+            models: list[str] = []
+            try:
+                models = fetch_models(name)
+                save_fetched_models(name, models)
+            except Exception as exc:
+                error = f"Key 已保存，但获取模型失败：{exc}"
+
+            effective = get_effective_provider(name)
+            self.send_json(
+                {
+                    "ok": error is None,
+                    "provider": name,
+                    "models": models or (effective.models if effective else []),
+                    "key_hint": mask_key(effective.api_key) if effective else "",
+                    "configured": bool(effective and effective.api_key and not effective.api_key.startswith("your-")),
+                    "error": error,
+                }
+            )
+        except ValueError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def handle_upload(self) -> None:
         try:
@@ -366,11 +427,15 @@ class RAGWebHandler(SimpleHTTPRequestHandler):
 
     def _providers_payload(self) -> list[dict[str, Any]]:
         providers = []
-        for name, provider in list_providers().items():
-            data = asdict(provider)
+        for name, _provider in list_providers().items():
+            effective = get_effective_provider(name)
+            if effective is None:
+                continue
+            data = asdict(effective)
             data.pop("api_key", None)
-            data["display_name"] = DISPLAY_NAMES.get(name, provider.display_name)
-            data["configured"] = configured_api_key(provider.api_key)
+            data["display_name"] = DISPLAY_NAMES.get(name, effective.display_name)
+            data["configured"] = configured_api_key(effective.api_key)
+            data["key_hint"] = mask_key(effective.api_key)
             providers.append(data)
         return providers
 

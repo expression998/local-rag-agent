@@ -43,6 +43,9 @@ const els = hasDocument
   modelSelect: document.querySelector("#modelSelect"),
   providerState: document.querySelector("#providerState"),
   providerLabel: document.querySelector("#providerLabel"),
+  apiKeyInput: document.querySelector("#apiKeyInput"),
+  baseUrlInput: document.querySelector("#baseUrlInput"),
+  saveProviderButton: document.querySelector("#saveProviderButton"),
   fileCount: document.querySelector("#fileCount"),
   chunkCount: document.querySelector("#chunkCount"),
   knowledgePath: document.querySelector("#knowledgePath"),
@@ -80,9 +83,13 @@ async function init() {
 
 function bindEvents() {
   els.providerSelect.addEventListener("change", () => {
+    els.apiKeyInput.value = "";
+    els.baseUrlInput.value = "";
     renderModels();
     renderProviderState();
   });
+
+  els.saveProviderButton.addEventListener("click", saveProviderConfig);
 
   els.refreshKnowledge.addEventListener("click", loadKnowledge);
   els.reindexButton.addEventListener("click", reindexKnowledge);
@@ -206,6 +213,51 @@ function renderProviderState() {
       ? `${provider.display_name} 已就绪`
       : `${provider.display_name} 需要配置 API Key`
     : "暂无模型配置";
+  els.apiKeyInput.placeholder = provider
+    ? configured
+      ? `已配置 ${provider.key_hint || "****"}，留空保持不变`
+      : "未配置，请输入 API Key"
+    : "";
+  els.baseUrlInput.placeholder = provider?.base_url ? `默认：${provider.base_url}` : "留空使用默认地址";
+}
+
+async function saveProviderConfig() {
+  const provider = currentProvider();
+  if (!provider) {
+    return;
+  }
+
+  const apiKey = els.apiKeyInput.value.trim();
+  const baseUrl = els.baseUrlInput.value.trim();
+  if (!apiKey && !baseUrl && !provider.configured) {
+    addMessage("error", "请先输入 API Key。");
+    return;
+  }
+
+  els.saveProviderButton.disabled = true;
+  try {
+    const data = await fetchJson("/api/provider/config", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: provider.name,
+        api_key: apiKey || null,
+        base_url: baseUrl || null,
+      }),
+    });
+
+    if (!data.ok) {
+      throw new Error(data.error || "配置失败");
+    }
+    els.apiKeyInput.value = "";
+    els.baseUrlInput.value = "";
+    await loadProviders();
+    addMessage("status", `已保存 ${provider.display_name} 配置，获取到 ${data.models.length} 个模型。`);
+  } catch (error) {
+    addMessage("error", `配置供应商失败：${error.message}`);
+    await loadProviders().catch(() => {});
+  } finally {
+    els.saveProviderButton.disabled = false;
+  }
 }
 
 async function loadKnowledge() {

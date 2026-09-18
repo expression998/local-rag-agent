@@ -1,6 +1,9 @@
 # 环境变量
 .env
 
+# 界面配置的供应商凭据（明文密钥，绝不提交）
+provider_settings.json
+
 # Python
 __pycache__/
 *.pyc
