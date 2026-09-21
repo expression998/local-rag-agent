@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（如 v0.4.1）；留空则补发所有缺失 Release 的 tag"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags --force
+
+      - name: Create release(s) from CHANGELOG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          PUSHED_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          set -e
+          REPO="${GITHUB_REPOSITORY}"
+
+          # 从 CHANGELOG.md 提取指定版本的说明（## 0.3.0 ... 到下一个 ## 之前）
+          publish() {
+            local tag="$1"
+            local version="${tag#v}"
+            local notes
+            notes=$(awk -v ver="$version" '
+              index($0, "## " ver) == 1 { found = 1; next }
+              /^## / && found { exit }
+              found { print }
+            ' CHANGELOG.md)
+            [ -z "$notes" ] && notes="Release ${tag}"
+
+            if gh release view "$tag" -R "$REPO" >/dev/null 2>&1; then
+              echo "  $tag 已存在，更新说明"
+              gh release edit "$tag" -R "$REPO" --title "$tag" --notes "$notes"
+            else
+              echo "  创建 Release $tag"
+              gh release create "$tag" -R "$REPO" --title "$tag" --notes "$notes"
+            fi
+          }
+
+          if [ -n "$PUSHED_TAG" ]; then
+            publish "$PUSHED_TAG"
+          elif [ -n "$INPUT_TAG" ]; then
+            publish "$INPUT_TAG"
+          else
+            echo "补发所有缺失 Release 的 tag..."
+            for t in $(git tag -l "v*" --sort=-creatordate); do
+              if gh release view "$t" -R "$REPO" >/dev/null 2>&1; then
+                echo "  跳过 $t（已有 Release）"
+              else
+                publish "$t" || echo "  [WARN] $t 发布失败"
+              fi
+            done
+          fi
